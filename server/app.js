@@ -138,25 +138,25 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     message: { error: 'Too many sign-in attempts. Try again in 15 minutes.' },
   });
 
-  function createSession(userId, response) {
+  async function createSession(userId, response) {
     const token = randomBytes(32).toString('base64url');
     const expiresAt = new Date(Date.now() + sessionDurationMs).toISOString();
-    db.prepare('INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)')
-      .run(userId, sha256(token), expiresAt);
+    await db.run('INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (?, ?, ?)',
+      userId, sha256(token), expiresAt);
     response.setHeader('Set-Cookie', `${sessionCookie}=${token}; ${cookieOptions(secureCookies)}`);
   }
 
-  function authenticate(request, response, next) {
+  async function authenticate(request, response, next) {
     const token = readSessionToken(request);
     if (!token) return sendError(response, 401, 'Please sign in to continue.');
-    const session = db.prepare(`
-      SELECT sessions.id AS sessionId, sessions.expires_at AS expiresAt,
+    const session = await db.get(`
+      SELECT sessions.id AS "sessionId", sessions.expires_at AS "expiresAt",
              users.id, users.email, users.name
       FROM sessions JOIN users ON users.id = sessions.user_id
       WHERE sessions.token_hash = ?
-    `).get(sha256(token));
+    `, sha256(token));
     if (!session || Date.parse(session.expiresAt) <= Date.now()) {
-      if (session) db.prepare('DELETE FROM sessions WHERE id = ?').run(session.sessionId);
+      if (session) await db.run('DELETE FROM sessions WHERE id = ?', session.sessionId);
       response.setHeader('Set-Cookie', clearSessionCookie(secureCookies));
       return sendError(response, 401, 'Your session has expired. Please sign in again.');
     }
@@ -165,7 +165,7 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     next();
   }
 
-  app.post('/api/auth/register', authLimiter, (request, response) => {
+  app.post('/api/auth/register', authLimiter, async (request, response) => {
     const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
     const email = typeof request.body.email === 'string' ? request.body.email.trim().toLowerCase() : '';
     const password = request.body.password;
@@ -177,115 +177,113 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
       return sendError(response, 400, 'Password must be between 10 and 72 characters.');
     }
     try {
-      const result = db.prepare('INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)')
-        .run(email, bcrypt.hashSync(password, 12), name);
-      const user = { id: Number(result.lastInsertRowid), email, name };
-      createSession(user.id, response);
+      const id = await db.insert('INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)',
+        email, bcrypt.hashSync(password, 12), name);
+      const user = { id: Number(id), email, name };
+      await createSession(user.id, response);
       return response.status(201).json({ user });
     } catch (error) {
-      if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      if (error.code === 'SQLITE_CONSTRAINT_UNIQUE' || error.code === '23505') {
         return sendError(response, 409, 'An account with this email already exists.');
       }
       throw error;
     }
   });
 
-  app.post('/api/auth/login', authLimiter, (request, response) => {
+  app.post('/api/auth/login', authLimiter, async (request, response) => {
     const email = typeof request.body.email === 'string' ? request.body.email.trim().toLowerCase() : '';
     const password = request.body.password;
     if (!email || typeof password !== 'string' || password.length > 72) {
       return sendError(response, 400, 'Enter your email address and password.');
     }
-    const user = db.prepare('SELECT id, email, name, password_hash FROM users WHERE email = ?').get(email);
+    const user = await db.get('SELECT id, email, name, password_hash FROM users WHERE email = ?', email);
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
       return sendError(response, 401, 'Email or password is incorrect.');
     }
-    createSession(user.id, response);
+    await createSession(user.id, response);
     return response.json({ user: publicUser(user) });
   });
 
   app.get('/api/auth/me', authenticate, (request, response) => response.json({ user: request.user }));
 
-  app.post('/api/auth/logout', authenticate, (request, response) => {
-    db.prepare('DELETE FROM sessions WHERE id = ?').run(request.sessionId);
+  app.post('/api/auth/logout', authenticate, async (request, response) => {
+    await db.run('DELETE FROM sessions WHERE id = ?', request.sessionId);
     response.setHeader('Set-Cookie', clearSessionCookie(secureCookies));
     return response.status(204).end();
   });
 
   app.use('/api', authenticate);
 
-  app.patch('/api/profile', (request, response) => {
+  app.patch('/api/profile', async (request, response) => {
     const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
     if (!name || name.length > 80) return sendError(response, 400, 'Name must be between 1 and 80 characters.');
-    db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, request.user.id);
+    await db.run('UPDATE users SET name = ? WHERE id = ?', name, request.user.id);
     return response.json({ user: { ...request.user, name } });
   });
 
-  app.get('/api/expenses', (request, response) => {
-    const expenses = db.prepare(`
+  app.get('/api/expenses', async (request, response) => {
+    const expenses = await db.all(`
       SELECT id, title, category, amount, date, note
       FROM expenses WHERE user_id = ?
       ORDER BY date DESC, id DESC
-    `).all(request.user.id);
+    `, request.user.id);
     return response.json({ expenses });
   });
 
-  app.post('/api/expenses', (request, response) => {
+  app.post('/api/expenses', async (request, response) => {
     const expense = validateExpense(request.body);
     if (typeof expense === 'string') return sendError(response, 400, expense);
-    const result = db.prepare(`
+    const id = await db.insert(`
       INSERT INTO expenses (user_id, title, category, amount, date, note)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(request.user.id, expense.title, expense.category, expense.amount, expense.date, expense.note);
-    return response.status(201).json({ expense: { id: Number(result.lastInsertRowid), ...expense } });
+    `, request.user.id, expense.title, expense.category, expense.amount, expense.date, expense.note);
+    return response.status(201).json({ expense: { id: Number(id), ...expense } });
   });
 
-  app.post('/api/expenses/import', (request, response) => {
+  app.post('/api/expenses/import', async (request, response) => {
     const entries = request.body.expenses;
     if (!Array.isArray(entries) || entries.length > 500) {
       return sendError(response, 400, 'Provide no more than 500 expenses to import.');
     }
-    if (db.prepare('SELECT 1 FROM expenses WHERE user_id = ? LIMIT 1').get(request.user.id)) {
+    if (await db.get('SELECT 1 FROM expenses WHERE user_id = ? LIMIT 1', request.user.id)) {
       return sendError(response, 409, 'This account already has expenses; local data was not imported.');
     }
     const validated = entries.map(validateExpense);
     const invalid = validated.find((entry) => typeof entry === 'string');
     if (invalid) return sendError(response, 400, `Local expense data could not be imported: ${invalid}`);
-    const insert = db.prepare(`
-      INSERT INTO expenses (user_id, title, category, amount, date, note)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    const importAll = db.transaction((expenses) => {
+    await db.transaction(async (tx) => {
       for (const expense of expenses) {
-        insert.run(request.user.id, expense.title, expense.category, expense.amount, expense.date, expense.note);
+        await tx.run(`
+          INSERT INTO expenses (user_id, title, category, amount, date, note)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `, request.user.id, expense.title, expense.category, expense.amount, expense.date, expense.note);
       }
     });
-    importAll(validated);
     return response.status(201).json({ imported: validated.length });
   });
 
-  app.patch('/api/expenses/:id', (request, response) => {
+  app.patch('/api/expenses/:id', async (request, response) => {
     const id = Number(request.params.id);
     if (!Number.isSafeInteger(id) || id < 1) return sendError(response, 400, 'Invalid expense ID.');
     const expense = validateExpense(request.body);
     if (typeof expense === 'string') return sendError(response, 400, expense);
-    const result = db.prepare(`
+    const result = await db.run(`
       UPDATE expenses SET title = ?, category = ?, amount = ?, date = ?, note = ?
       WHERE id = ? AND user_id = ?
-    `).run(expense.title, expense.category, expense.amount, expense.date, expense.note, id, request.user.id);
+    `, expense.title, expense.category, expense.amount, expense.date, expense.note, id, request.user.id);
     if (!result.changes) return sendError(response, 404, 'Expense not found.');
     return response.json({ expense: { id, ...expense } });
   });
 
-  app.delete('/api/expenses/:id', (request, response) => {
+  app.delete('/api/expenses/:id', async (request, response) => {
     const id = Number(request.params.id);
     if (!Number.isSafeInteger(id) || id < 1) return sendError(response, 400, 'Invalid expense ID.');
-    const result = db.prepare('DELETE FROM expenses WHERE id = ? AND user_id = ?').run(id, request.user.id);
+    const result = await db.run('DELETE FROM expenses WHERE id = ? AND user_id = ?', id, request.user.id);
     if (!result.changes) return sendError(response, 404, 'Expense not found.');
     return response.status(204).end();
   });
 
-  app.get('/api/reports/summary', (request, response) => {
+  app.get('/api/reports/summary', async (request, response) => {
     const months = Number(request.query.months ?? 6);
     if (!Number.isInteger(months) || months < 1 || months > 24) {
       return sendError(response, 400, 'Months must be a whole number from 1 to 24.');
@@ -294,11 +292,11 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     const monthKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
     const firstMonth = new Date(now.getFullYear(), now.getMonth() - months + 1, 1);
     const startDate = `${monthKey(firstMonth)}-01`;
-    const rows = db.prepare(`
+    const rows = await db.all(`
       SELECT strftime('%Y-%m', date) AS month, ROUND(SUM(amount), 2) AS total
       FROM expenses WHERE user_id = ? AND date >= ?
       GROUP BY strftime('%Y-%m', date) ORDER BY month
-    `).all(request.user.id, startDate);
+    `, request.user.id, startDate);
     const totalsByMonth = new Map(rows.map((row) => [row.month, row.total]));
     const monthly = Array.from({ length: months }, (_, index) => {
       const month = new Date(firstMonth.getFullYear(), firstMonth.getMonth() + index, 1);
@@ -306,17 +304,18 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
       return { month: key, name: month.toLocaleDateString('en-US', { month: 'short' }), value: totalsByMonth.get(key) || 0 };
     });
     const currentMonth = monthKey(now);
-    const categoriesForMonth = db.prepare(`
+    const categoriesForMonth = await db.all(`
       SELECT category AS name, ROUND(SUM(amount), 2) AS value
       FROM expenses
       WHERE user_id = ? AND strftime('%Y-%m', date) = ?
       GROUP BY category ORDER BY value DESC
-    `).all(request.user.id, currentMonth);
+    `, request.user.id, currentMonth);
     const total = categoriesForMonth.reduce((sum, category) => sum + category.value, 0);
-    const count = db.prepare(`
+    const countResult = await db.get(`
       SELECT COUNT(*) AS count FROM expenses
       WHERE user_id = ? AND strftime('%Y-%m', date) = ?
-    `).get(request.user.id, currentMonth).count;
+    `, request.user.id, currentMonth);
+    const count = Number(countResult.count);
     return response.json({
       monthly,
       categories: categoriesForMonth,
@@ -324,11 +323,11 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     });
   });
 
-  app.get('/api/reports/export.csv', (request, response) => {
-    const rows = db.prepare(`
+  app.get('/api/reports/export.csv', async (request, response) => {
+    const rows = await db.all(`
       SELECT title, category, date, amount, note FROM expenses
       WHERE user_id = ? ORDER BY date DESC, id DESC
-    `).all(request.user.id);
+    `, request.user.id);
     const escape = (value) => {
       let text = String(value ?? '');
       if (/^[=+\-@]/.test(text)) text = `'${text}`;
@@ -343,41 +342,41 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     return response.send(`\uFEFF${csv}`);
   });
 
-  app.get('/api/goals', (request, response) => {
-    const goals = db.prepare(`
-      SELECT id, title, target_amount AS targetAmount, current_amount AS currentAmount, target_date AS targetDate
+  app.get('/api/goals', async (request, response) => {
+    const goals = await db.all(`
+      SELECT id, title, target_amount AS "targetAmount", current_amount AS "currentAmount", target_date AS "targetDate"
       FROM goals WHERE user_id = ? ORDER BY id DESC
-    `).all(request.user.id);
+    `, request.user.id);
     return response.json({ goals });
   });
 
-  app.post('/api/goals', (request, response) => {
+  app.post('/api/goals', async (request, response) => {
     const goal = validateGoal(request.body);
     if (typeof goal === 'string') return sendError(response, 400, goal);
-    const result = db.prepare(`
+    const id = await db.insert(`
       INSERT INTO goals (user_id, title, target_amount, current_amount, target_date)
       VALUES (?, ?, ?, ?, ?)
-    `).run(request.user.id, goal.title, goal.targetAmount, goal.currentAmount, goal.targetDate);
-    return response.status(201).json({ goal: { id: Number(result.lastInsertRowid), ...goal } });
+    `, request.user.id, goal.title, goal.targetAmount, goal.currentAmount, goal.targetDate);
+    return response.status(201).json({ goal: { id: Number(id), ...goal } });
   });
 
-  app.patch('/api/goals/:id', (request, response) => {
+  app.patch('/api/goals/:id', async (request, response) => {
     const id = Number(request.params.id);
     if (!Number.isSafeInteger(id) || id < 1) return sendError(response, 400, 'Invalid goal ID.');
     const goal = validateGoal(request.body);
     if (typeof goal === 'string') return sendError(response, 400, goal);
-    const result = db.prepare(`
+    const result = await db.run(`
       UPDATE goals SET title = ?, target_amount = ?, current_amount = ?, target_date = ?
       WHERE id = ? AND user_id = ?
-    `).run(goal.title, goal.targetAmount, goal.currentAmount, goal.targetDate, id, request.user.id);
+    `, goal.title, goal.targetAmount, goal.currentAmount, goal.targetDate, id, request.user.id);
     if (!result.changes) return sendError(response, 404, 'Goal not found.');
     return response.json({ goal: { id, ...goal } });
   });
 
-  app.delete('/api/goals/:id', (request, response) => {
+  app.delete('/api/goals/:id', async (request, response) => {
     const id = Number(request.params.id);
     if (!Number.isSafeInteger(id) || id < 1) return sendError(response, 400, 'Invalid goal ID.');
-    const result = db.prepare('DELETE FROM goals WHERE id = ? AND user_id = ?').run(id, request.user.id);
+    const result = await db.run('DELETE FROM goals WHERE id = ? AND user_id = ?', id, request.user.id);
     if (!result.changes) return sendError(response, 404, 'Goal not found.');
     return response.status(204).end();
   });
