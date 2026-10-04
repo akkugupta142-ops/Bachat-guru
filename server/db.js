@@ -87,12 +87,13 @@ export function createDatabase(filename = process.env.DB_FILE || './data/bachat-
   return db;
 }
 
-function postgresAdapter(pool) {
-  const toPostgresSql = (sql) => {
-    let index = 0;
-    return sql.replace(/\?/g, () => `$${++index}`)
-      .replace(/strftime\('%Y-%m',\s*date\)/g, "TO_CHAR(date, 'YYYY-MM')");
-  };
+export function toPostgresSql(sql) {
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`)
+    .replace(/strftime\('%Y-%m',\s*date\)/g, "TO_CHAR(date, 'YYYY-MM')");
+}
+
+export function createPostgresAdapter(pool) {
   return {
     dialect: 'postgres',
     async get(sql, ...params) {
@@ -149,7 +150,7 @@ export async function createPostgresDatabase(connectionString = process.env.DATA
     connectionTimeoutMillis: 10000,
     idleTimeoutMillis: 30000,
   });
-  const db = postgresAdapter(pool);
+  const db = createPostgresAdapter(pool);
   try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (

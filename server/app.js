@@ -251,14 +251,23 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     const validated = entries.map(validateExpense);
     const invalid = validated.find((entry) => typeof entry === 'string');
     if (invalid) return sendError(response, 400, `Local expense data could not be imported: ${invalid}`);
-    await db.transaction(async (tx) => {
-      for (const expense of expenses) {
-        await tx.run(`
+    const insertSql = `
           INSERT INTO expenses (user_id, title, category, amount, date, note)
           VALUES (?, ?, ?, ?, ?, ?)
-        `, request.user.id, expense.title, expense.category, expense.amount, expense.date, expense.note);
-      }
-    });
+        `;
+    if (db.dialect === 'sqlite') {
+      db.transaction((tx) => {
+        for (const expense of validated) {
+          tx.run(insertSql, request.user.id, expense.title, expense.category, expense.amount, expense.date, expense.note);
+        }
+      });
+    } else {
+      await db.transaction(async (tx) => {
+        for (const expense of validated) {
+          await tx.run(insertSql, request.user.id, expense.title, expense.category, expense.amount, expense.date, expense.note);
+        }
+      });
+    }
     return response.status(201).json({ imported: validated.length });
   });
 
