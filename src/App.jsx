@@ -31,8 +31,11 @@ function initials(name = '') {
   return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase()).join('') || 'BG';
 }
 
-function Logo() {
-  return <div className="logo"><img className="logo-mark-image" src="/bachat-guru-logo-mark.png" alt="" /><span>Bachat <b>Guru</b></span></div>;
+function Logo({ onClick }) {
+  const content = <><img className="logo-mark-image" src="/bachat-guru-logo-mark.png" alt="" /><span>Bachat <b>Guru</b></span></>;
+  return onClick
+    ? <button type="button" className="logo logo-button" aria-label="Go to dashboard overview" onClick={onClick}>{content}</button>
+    : <div className="logo">{content}</div>;
 }
 
 function Landing({ onAuth }) {
@@ -421,7 +424,7 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileNav ? 'open' : ''}`}>
-      <div className="side-top"><Logo /><button className="close-nav" onClick={() => setMobileNav(false)} aria-label="Close navigation"><X size={18} /></button></div>
+      <div className="side-top"><Logo onClick={() => { setView('Overview'); setMobileNav(false); setModal(null); setMenu(false); }} /><button className="close-nav" onClick={() => setMobileNav(false)} aria-label="Close navigation"><X size={18} /></button></div>
       <div className="workspace"><span className="workspace-avatar">{initials(user.name).slice(0, 1)}</span><div><b>{user.name}’s workspace</b><small>Personal finances</small></div><ChevronDown size={15} /></div>
       <nav className="side-nav">{nav.map(([name, Icon]) => <button key={name} className={view === name ? 'active' : ''} onClick={() => { setView(name); setMobileNav(false); }}><Icon size={18} />{name}</button>)}<div className="nav-label">MANAGE</div><button onClick={() => { setView('Goals'); setMobileNav(false); }} className={view === 'Goals' ? 'active' : ''}><Target size={18} />Goals</button><button onClick={() => { setView('Settings'); setMobileNav(false); }} className={view === 'Settings' ? 'active' : ''}><Settings size={18} />Settings</button></nav>
       <div className="sidebar-bottom"><div className="tip"><Sparkles size={17} /><b>Pro tip</b><p>Review your expenses every Sunday to stay on track.</p></div><button className="profile" onClick={() => setMenu(!menu)}><span className="profile-avatar">{initials(user.name)}</span><div><b>{user.name}</b><small>Personal account</small></div><MoreHorizontal size={17} /></button></div>
