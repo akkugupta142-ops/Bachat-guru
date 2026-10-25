@@ -5,11 +5,12 @@ import {
 } from 'recharts';
 import {
   ArrowRight, Check, ChevronDown, CreditCard, Edit3, FileText, Home,
-  LogIn, Menu, MoreHorizontal, Plus, Search, Settings, Sparkles, Target,
-  Trash2, TrendingUp, Wallet, X,
+  LogIn, Menu, Moon, MoreHorizontal, Plus, Search, Settings, Sparkles, Sun,
+  Target, Trash2, TrendingUp, Wallet, X, Award,
 } from 'lucide-react';
 import { api } from './api';
 import './styles.css';
+import './redesign.css';
 
 const categories = ['Food & dining', 'Transport', 'Entertainment', 'Bills', 'Health', 'Shopping', 'Other'];
 const colors = ['#14b8a6', '#6366f1', '#f59e0b', '#f97316', '#ec4899', '#8b5cf6', '#94a3b8'];
@@ -25,6 +26,10 @@ function formatCurrency(value, digits = 2) {
 function localDateValue() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function localMonthValue() {
+  return localDateValue().slice(0, 7);
 }
 
 function initials(name = '') {
@@ -213,20 +218,90 @@ function Recent({ expenses, query, setQuery, setModal, remove, onViewAll }) {
   </section>;
 }
 
-function Overview({ expenses, summary, summaryMonths, onPeriodChange, query, setQuery, setModal, remove, onViewAll }) {
+function DailyGuide({ expenses, monthlyIncome, onSetIncome }) {
+  const allowance = monthlyIncome / 30;
+  const todaySpent = expenses
+    .filter((expense) => expense.date === localDateValue())
+    .reduce((sum, expense) => sum + expense.amount, 0);
+  const remaining = Math.max(0, allowance - todaySpent);
+  const percent = allowance > 0 ? Math.min(100, (todaySpent / allowance) * 100) : 0;
+  return <section className="panel daily-guide">
+    <div className="guide-copy"><span className="feature-icon teal-bg"><Sparkles size={19} /></span><div><span className="eyebrow">YOUR DAILY GUIDE</span><h2>{allowance ? `${formatCurrency(allowance)} to work with today` : 'Set your monthly income'}</h2><p className="muted">{allowance ? 'Your monthly income, split into a steady daily allowance.' : 'Add your monthly income to get a simple daily allowance.'}</p></div></div>
+    {allowance ? <div className="guide-progress"><div className="guide-amounts"><span>{formatCurrency(todaySpent)} spent</span><b>{formatCurrency(remaining)} left today</b></div><div className="budget-track"><span style={{ width: `${percent}%` }} /></div><small>Unused allowance is saved at 10 PM and never rolls over.</small></div> : <button className="btn btn-ghost" onClick={onSetIncome}>Set income <ArrowRight size={15} /></button>}
+  </section>;
+}
+
+function BudgetsPanel({ budgets, month, onSave, onRemove }) {
+  const [drafts, setDrafts] = useState({});
+  const [error, setError] = useState('');
+  const monthLabel = new Date(`${month}-01T12:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  return <section className="panel budgets-panel">
+    <div className="panel-head"><div><h2>Monthly category budgets</h2><p className="muted">Choose your own limits for {monthLabel}.</p></div></div>
+    {error && <div className="error" role="alert">{error}</div>}
+    <div className="budget-list">{budgets.map((budget) => {
+      const percent = budget.amount > 0 ? Math.min(100, (budget.spent / budget.amount) * 100) : 0;
+      const exceeded = budget.amount > 0 && budget.spent >= budget.amount;
+      const warning = budget.amount > 0 && !exceeded && percent >= 80;
+      return <div className={`budget-row ${exceeded ? 'over-budget' : warning ? 'near-budget' : ''}`} key={budget.category}>
+        <div className="budget-name"><i style={{ background: categoryColors[budget.category] }} /><b>{budget.category}</b><small>{budget.amount ? `${formatCurrency(budget.spent)} of ${formatCurrency(budget.amount)}` : `${formatCurrency(budget.spent)} spent`}</small></div>
+        <div className="budget-status">{budget.amount ? <><div className="budget-track"><span style={{ width: `${percent}%` }} /></div><small>{exceeded ? `Limit reached — ${formatCurrency(budget.spent - budget.amount)} over` : warning ? `${Math.round(percent)}% used — approaching limit` : `${Math.round(percent)}% used`}</small></> : <small>Set a limit to track this category</small>}</div>
+        <form className="budget-edit" onSubmit={async (event) => {
+          event.preventDefault();
+          setError('');
+          try {
+            const amount = Number(drafts[budget.category] ?? budget.amount);
+            if (amount > 0) await onSave(budget.category, amount);
+            else if (budget.amount) await onRemove(budget.category);
+            setDrafts((current) => {
+              const next = { ...current };
+              delete next[budget.category];
+              return next;
+            });
+          } catch (requestError) { setError(requestError.message); }
+        }}>
+          <label className="sr-only" htmlFor={`budget-${budget.category}`}>Monthly {budget.category} limit</label>
+          <input id={`budget-${budget.category}`} type="number" min="0" max="1000000000" step="0.01" value={drafts[budget.category] ?? (budget.amount || '')} onChange={(event) => setDrafts((current) => ({ ...current, [budget.category]: event.target.value }))} placeholder="₹ limit" />
+          <button className="btn btn-ghost" type="submit">Save</button>
+        </form>
+      </div>;
+    })}</div>
+    <p className="budget-note"><span className="status-dot warning-dot" /> Alerts appear at 80% and at/over your limit.</p>
+  </section>;
+}
+
+function DailySummaryModal({ allowance, spent, onClose }) {
+  const saved = Math.max(0, allowance - spent);
+  return <div className="modal-backdrop" role="presentation">
+    <section className="modal daily-summary" role="dialog" aria-modal="true" aria-labelledby="daily-summary-title">
+      <div className="summary-modal-icon"><Award size={25} /></div>
+      <span className="eyebrow">YOUR 10 PM CHECK-IN</span>
+      <h2 id="daily-summary-title">A little progress, every day.</h2>
+      <p className="muted">Today you spent {formatCurrency(spent)} from your {formatCurrency(allowance)} allowance.</p>
+      <div className="saved-today"><small>ADDED TO TODAY'S SAVINGS</small><strong>{formatCurrency(saved)}</strong></div>
+      <p className="summary-footnote">Your allowance resets tomorrow. Today's unspent amount won't roll over.</p>
+      <button className="btn btn-primary" onClick={onClose}>Got it <Check size={16} /></button>
+    </section>
+  </div>;
+}
+
+function Overview({ expenses, allExpenses, summary, summaryMonths, onPeriodChange, query, setQuery, setModal, remove, onViewAll, budgets, onBudgetSave, onBudgetRemove, onSetIncome, goals, monthlyIncome }) {
   const monthLabel = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
   const monthlyData = summary?.monthly || [];
   const byCategory = (summary?.categories || []).map((item) => ({ ...item, color: categoryColors[item.name] }));
   const total = summary?.totals?.spent || 0;
   const topCategory = byCategory[0]?.name || 'No spending yet';
+  const daysElapsed = new Date().getDate();
+  const averageDaily = total / Math.max(1, daysElapsed);
   return <>
     <div className="welcome-row"><div><span className="eyebrow">{new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).toUpperCase()}</span><h1>Good day, {summary?.userName || 'there'} <span>✦</span></h1><p className="muted">Here’s your financial snapshot for {monthLabel}.</p></div><button className="btn btn-primary" onClick={() => setModal('new')}><Plus size={18} /> Add expense</button></div>
     <div className="summary-grid">
       <SummaryCard icon={<Wallet size={19} />} title="Spent this month" value={formatCurrency(total)} meta={monthLabel} tone="teal" />
       <SummaryCard icon={<CreditCard size={19} />} title="Transactions" value={String(summary?.totals?.count || 0)} meta={`${monthLabel}`} tone="indigo" />
-      <SummaryCard icon={<TrendingUp size={19} />} title="Average expense" value={formatCurrency(summary?.totals?.average || 0)} meta="Per transaction this month" tone="orange" />
-      <SummaryCard icon={<Target size={19} />} title="Top category" value={topCategory} meta={byCategory.length ? formatCurrency(byCategory[0].value) : 'Add an expense to begin'} tone="pink" />
+      <SummaryCard icon={<TrendingUp size={19} />} title="Average daily spend" value={formatCurrency(averageDaily)} meta="Per day this month" tone="orange" />
+      <SummaryCard icon={<Target size={19} />} title="Saved toward goals" value={formatCurrency(goals.reduce((sum, goal) => sum + goal.currentAmount, 0))} meta={`${goals.length} active ${goals.length === 1 ? 'goal' : 'goals'}`} tone="pink" />
     </div>
+    <DailyGuide expenses={allExpenses} monthlyIncome={monthlyIncome} onSetIncome={onSetIncome} />
+    <BudgetsPanel budgets={budgets} month={localMonthValue()} onSave={onBudgetSave} onRemove={onBudgetRemove} />
     <div className="dashboard-grid">
       <section className="panel spending-panel"><div className="panel-head"><div><h2>Spending overview</h2><p className="muted">Your recorded monthly spend</p></div><select aria-label="Select period" value={summaryMonths} onChange={(event) => onPeriodChange(Number(event.target.value))}><option value="6">Last 6 months</option><option value={new Date().getMonth() + 1}>This year</option></select></div>
         <div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={monthlyData}><defs><linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6366f1" stopOpacity={.2} /><stop offset="100%" stopColor="#6366f1" stopOpacity={0} /></linearGradient></defs><XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 12 }} /><YAxis axisLine={false} tickLine={false} tick={{ fill: '#94a3b8', fontSize: 11 }} tickFormatter={(value) => `₹${value / 1000}k`} width={42} /><Tooltip formatter={(value) => [formatCurrency(value, 0), 'Spent']} contentStyle={{ borderRadius: 12, border: '1px solid #e2e8f0', boxShadow: '0 8px 24px #0f172a14' }} /><Area type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={3} fill="url(#areaFill)" /></AreaChart></ResponsiveContainer></div>
@@ -259,14 +334,20 @@ function ExpensesView({ expenses, query, setQuery, category, setCategory, period
   </>;
 }
 
-function Reports({ summary, onExport }) {
+function Reports({ summary, onExport, goals, budgets, onBudgetSave, onBudgetRemove }) {
   const categoriesForMonth = (summary?.categories || []).map((item) => ({ ...item, color: categoryColors[item.name] }));
   const topCategory = categoriesForMonth[0];
+  const spent = summary?.totals?.spent || 0;
+  const count = summary?.totals?.count || 0;
+  const dailyAverage = spent / Math.max(1, new Date().getDate());
+  const saved = goals.reduce((sum, goal) => sum + goal.currentAmount, 0);
   return <>
     <div className="welcome-row"><div><span className="eyebrow">INSIGHTS</span><h1>Your reports</h1><p className="muted">Patterns based on the expenses you’ve recorded.</p></div><button className="btn btn-ghost" onClick={onExport}><FileText size={17} /> Export expenses</button></div>
+    <div className="report-stats"><SummaryCard icon={<Wallet size={19} />} title="Total spent" value={formatCurrency(spent)} meta="This month" tone="teal" /><SummaryCard icon={<Target size={19} />} title="Total saved" value={formatCurrency(saved)} meta="Across your savings goals" tone="pink" /><SummaryCard icon={<TrendingUp size={19} />} title="Average daily spend" value={formatCurrency(dailyAverage)} meta="This month so far" tone="orange" /><SummaryCard icon={<CreditCard size={19} />} title="Transactions" value={String(count)} meta="This month" tone="indigo" /></div>
     <div className="reports-grid"><section className="panel report-card"><h2>Category comparison</h2><p className="muted">Spending by category this month</p><div className="report-chart"><ResponsiveContainer width="100%" height="100%"><BarChart data={categoriesForMonth}><XAxis dataKey="name" tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false} /><YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} /><Tooltip formatter={(value) => formatCurrency(value)} /><Bar dataKey="value" fill="#14b8a6" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div></section>
       <section className="panel insight-card"><div className="insight-icon"><Sparkles size={21} /></div><span className="eyebrow">A LITTLE INSIGHT</span><h2>{topCategory ? `${topCategory.name} is your biggest category` : 'Your report is ready when you are'}</h2><p>{topCategory ? `${formatCurrency(topCategory.value)} recorded in this category this month.` : 'Add expenses to see a useful, up-to-date category comparison.'}</p></section>
     </div>
+    <BudgetsPanel budgets={budgets} month={localMonthValue()} onSave={onBudgetSave} onRemove={onBudgetRemove} />
   </>;
 }
 
@@ -276,13 +357,14 @@ function GoalsView({ goals, setModal, onDelete, onContribute }) {
     <div className="welcome-row"><div><span className="eyebrow">SAVINGS PLANS</span><h1>Your goals</h1><p className="muted">Set a target and make progress visible.</p></div><button className="btn btn-primary" onClick={() => setModal('new')}><Plus size={18} /> Create a goal</button></div>
     {goals.length ? <div className="goals-grid">{goals.map((goal) => {
       const percent = Math.min(100, Math.round((goal.currentAmount / goal.targetAmount) * 100));
-      return <section className="panel goal-card" key={goal.id}><div className="goal-card-head"><span className="empty-icon"><Target size={22} /></span><div className="goal-actions"><button aria-label={`Edit ${goal.title}`} onClick={() => setModal(goal)}><Edit3 size={15} /></button><button aria-label={`Delete ${goal.title}`} onClick={() => onDelete(goal)}><Trash2 size={15} /></button></div></div><h2>{goal.title}</h2><p className="muted">{formatCurrency(goal.currentAmount)} saved of {formatCurrency(goal.targetAmount)}</p><div className="goal-progress"><span style={{ width: `${percent}%` }} /></div><div className="goal-progress-label"><span>{percent}% complete</span><span>{goal.targetDate ? `Target ${new Date(`${goal.targetDate}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'No target date'}</span></div><form className="contribute-form" onSubmit={(event) => { event.preventDefault(); const amount = Number(contributions[goal.id]); if (amount > 0) onContribute(goal, amount); setContributions((current) => ({ ...current, [goal.id]: '' })); }}><input aria-label={`Amount to add to ${goal.title}`} type="number" min="0.01" step="0.01" max={Math.max(0, goal.targetAmount - goal.currentAmount)} value={contributions[goal.id] || ''} onChange={(event) => setContributions((current) => ({ ...current, [goal.id]: event.target.value }))} placeholder="Add savings" /><button className="btn btn-ghost" type="submit" disabled={goal.currentAmount >= goal.targetAmount}>Add</button></form></section>;
+      return <section className="panel goal-card" key={goal.id}><div className="goal-card-head"><span className="empty-icon"><Target size={22} /></span><div className="goal-actions"><button aria-label={`Edit ${goal.title}`} onClick={() => setModal(goal)}><Edit3 size={15} /></button><button aria-label={`Delete ${goal.title}`} onClick={() => onDelete(goal)}><Trash2 size={15} /></button></div></div><h2>{goal.title}</h2><p className="muted">{formatCurrency(goal.currentAmount)} saved of {formatCurrency(goal.targetAmount)}</p><div className="goal-progress"><span style={{ width: `${percent}%` }} /></div><div className="goal-progress-label"><span>{percent}% · {percent === 100 ? 'Goal reached!' : percent >= 75 ? '75% milestone' : percent >= 50 ? 'Halfway there' : percent >= 25 ? 'Quarter way' : 'Getting started'}</span><span>{goal.targetDate ? `Target ${new Date(`${goal.targetDate}T12:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}` : 'No target date'}</span></div><form className="contribute-form" onSubmit={(event) => { event.preventDefault(); const amount = Number(contributions[goal.id]); if (amount > 0) onContribute(goal, amount); setContributions((current) => ({ ...current, [goal.id]: '' })); }}><input aria-label={`Amount to add to ${goal.title}`} type="number" min="0.01" step="0.01" max={Math.max(0, goal.targetAmount - goal.currentAmount)} value={contributions[goal.id] || ''} onChange={(event) => setContributions((current) => ({ ...current, [goal.id]: event.target.value }))} placeholder="Add savings" /><button className="btn btn-ghost" type="submit" disabled={goal.currentAmount >= goal.targetAmount}>Add</button></form></section>;
     })}</div> : <EmptyView icon={<Target />} title="Start a savings goal" copy="Choose something to save for and track your progress here." action="Create a goal" onAction={() => setModal('new')} />}
   </>;
 }
 
 function SettingsView({ user, onSave }) {
   const [name, setName] = useState(user.name);
+  const [monthlyIncome, setMonthlyIncome] = useState(user.monthlyIncome || '');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -290,7 +372,7 @@ function SettingsView({ user, onSave }) {
     event.preventDefault();
     setBusy(true); setMessage(''); setError('');
     try {
-      await onSave(name.trim());
+      await onSave(name.trim(), Number(monthlyIncome || 0));
       setMessage('Your profile was updated.');
     } catch (requestError) {
       setError(requestError.message);
@@ -298,7 +380,7 @@ function SettingsView({ user, onSave }) {
       setBusy(false);
     }
   }
-  return <><div className="welcome-row"><div><span className="eyebrow">YOUR ACCOUNT</span><h1>Settings</h1><p className="muted">Manage your personal profile.</p></div></div><section className="panel settings-panel"><h2>Profile details</h2><p className="muted">Your account information is private to you.</p><form onSubmit={submit}><label>Display name<input required maxLength="80" value={name} onChange={(event) => setName(event.target.value)} /></label><label>Email address<input type="email" value={user.email} readOnly /></label>{error && <div className="error" role="alert">{error}</div>}{message && <div className="success-message" role="status">{message}</div>}<button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button></form></section></>;
+  return <><div className="welcome-row"><div><span className="eyebrow">YOUR ACCOUNT</span><h1>Settings</h1><p className="muted">Manage your profile and daily allowance.</p></div></div><section className="panel settings-panel"><h2>Profile & daily guide</h2><p className="muted">Your account information is private to you. Your daily allowance is monthly income divided by 30.</p><form onSubmit={submit}><label>Display name<input required maxLength="80" value={name} onChange={(event) => setName(event.target.value)} /></label><label>Email address<input type="email" value={user.email} readOnly /></label><label>Monthly income (₹)<input type="number" min="0" max="1000000000" step="0.01" value={monthlyIncome} onChange={(event) => setMonthlyIncome(event.target.value)} placeholder="e.g. 60000" /></label>{error && <div className="error" role="alert">{error}</div>}{message && <div className="success-message" role="status">{message}</div>}<button className="btn btn-primary" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button></form></section></>;
 }
 
 function EmptyView({ icon, title, copy, action, onAction }) {
@@ -311,6 +393,7 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
   const [summary, setSummary] = useState(null);
   const [summaryMonths, setSummaryMonths] = useState(6);
   const [goals, setGoals] = useState([]);
+  const [budgets, setBudgets] = useState([]);
   const [modal, setModal] = useState(null);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('All categories');
@@ -319,6 +402,11 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
   const [mobileNav, setMobileNav] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState(initialNotice || '');
+  const [dailySummaryVisible, setDailySummaryVisible] = useState(false);
+  const [dailySummaryDismissed, setDailySummaryDismissed] = useState(
+    () => localStorage.getItem(`bg_daily_summary_${user.id}`) || '',
+  );
+  const nav = [['Overview', Home], ['Expenses', Wallet], ['Reports', PieChart], ['Goals', Target], ['Settings', Settings]];
 
   async function refreshExpenses() {
     const result = await api('/expenses');
@@ -332,12 +420,32 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
     const result = await api('/goals');
     setGoals(result.goals);
   }
+  async function refreshBudgets(month = localMonthValue()) {
+    const result = await api(`/budgets?month=${month}`);
+    setBudgets(result.budgets);
+  }
 
   useEffect(() => {
-    Promise.all([refreshExpenses(), refreshSummary(), refreshGoals()])
+    Promise.all([refreshExpenses(), refreshSummary(), refreshGoals(), refreshBudgets()])
       .catch((error) => setNotice(error.message))
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!user.monthlyIncome) return undefined;
+    const checkForDailySummary = () => {
+      const now = new Date();
+      const today = localDateValue();
+      if (now.getHours() >= 22 && dailySummaryDismissed !== today) setDailySummaryVisible(true);
+    };
+    checkForDailySummary();
+    const timer = window.setInterval(checkForDailySummary, 30_000);
+    window.addEventListener('focus', checkForDailySummary);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', checkForDailySummary);
+    };
+  }, [user.id, user.monthlyIncome, dailySummaryDismissed]);
 
   async function saveExpense(expense) {
     const isExisting = Number.isInteger(expense.id);
@@ -348,7 +456,7 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
     setExpenses((current) => isExisting
       ? current.map((item) => item.id === result.expense.id ? result.expense : item)
       : [result.expense, ...current]);
-    await refreshSummary();
+    await Promise.all([refreshSummary(), refreshBudgets()]);
     setModal(null);
     setNotice('');
   }
@@ -359,7 +467,7 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
     try {
       await api(`/expenses/${id}`, { method: 'DELETE' });
       setExpenses((current) => current.filter((item) => item.id !== id));
-      await refreshSummary();
+      await Promise.all([refreshSummary(), refreshBudgets()]);
       setNotice('');
     } catch (error) { setNotice(error.message); }
   }
@@ -395,6 +503,24 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
     } catch (error) { setNotice(error.message); }
   }
 
+  async function saveBudget(categoryName, amount) {
+    await api('/budgets', {
+      method: 'PUT',
+      body: { category: categoryName, month: localMonthValue(), amount },
+    });
+    await refreshBudgets();
+    setNotice('');
+  }
+
+  async function removeBudget(categoryName) {
+    await api('/budgets', {
+      method: 'DELETE',
+      body: { category: categoryName, month: localMonthValue() },
+    });
+    await refreshBudgets();
+    setNotice('');
+  }
+
   async function exportReport() {
     try {
       const response = await fetch('/api/reports/export.csv');
@@ -414,7 +540,6 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
     } catch (error) { setNotice(error.message); }
   }
 
-  const nav = [['Overview', Home], ['Expenses', Wallet], ['Reports', PieChart]];
   const overviewExpenses = useMemo(() => {
     const term = query.trim().toLowerCase();
     return expenses.filter((expense) => !term || `${expense.title} ${expense.category} ${expense.note}`.toLowerCase().includes(term));
@@ -422,27 +547,43 @@ function Dashboard({ user, onLogout, onUserChange, initialNotice }) {
 
   if (loading) return <div className="app-loading"><Logo /><p>Loading your private workspace…</p></div>;
 
-  return <div className="app-shell">
-    <aside className={`sidebar ${mobileNav ? 'open' : ''}`}>
-      <div className="side-top"><Logo onClick={() => { setView('Overview'); setMobileNav(false); setModal(null); setMenu(false); }} /><button className="close-nav" onClick={() => setMobileNav(false)} aria-label="Close navigation"><X size={18} /></button></div>
-      <div className="workspace"><span className="workspace-avatar">{initials(user.name).slice(0, 1)}</span><div><b>{user.name}’s workspace</b><small>Personal finances</small></div><ChevronDown size={15} /></div>
-      <nav className="side-nav">{nav.map(([name, Icon]) => <button key={name} className={view === name ? 'active' : ''} onClick={() => { setView(name); setMobileNav(false); }}><Icon size={18} />{name}</button>)}<div className="nav-label">MANAGE</div><button onClick={() => { setView('Goals'); setMobileNav(false); }} className={view === 'Goals' ? 'active' : ''}><Target size={18} />Goals</button><button onClick={() => { setView('Settings'); setMobileNav(false); }} className={view === 'Settings' ? 'active' : ''}><Settings size={18} />Settings</button></nav>
-      <div className="sidebar-bottom"><div className="tip"><Sparkles size={17} /><b>Pro tip</b><p>Review your expenses every Sunday to stay on track.</p></div><button className="profile" onClick={() => setMenu(!menu)}><span className="profile-avatar">{initials(user.name)}</span><div><b>{user.name}</b><small>Personal account</small></div><MoreHorizontal size={17} /></button></div>
-    </aside>
-    {mobileNav && <div className="nav-overlay" onClick={() => setMobileNav(false)}></div>}
+  return <div className="app-shell" data-theme={user.theme || 'dark'}>
+    <header className="topbar">
+      <Logo onClick={() => { setView('Overview'); setMobileNav(false); setModal(null); setMenu(false); }} />
+      <nav className="desktop-nav" aria-label="Main navigation">{nav.map(([name, Icon]) => <button key={name} className={view === name ? 'active' : ''} onClick={() => setView(name)}><Icon size={16} />{name}</button>)}</nav>
+      <div className="top-actions">
+        <button className="theme-toggle" aria-label={user.theme === 'dark' ? 'Switch to fresh green theme' : 'Switch to premium dark theme'} title={user.theme === 'dark' ? 'Switch to fresh green theme' : 'Switch to premium dark theme'} onClick={async () => {
+          const theme = user.theme === 'dark' ? 'light' : 'dark';
+          try {
+            const result = await api('/preferences', { method: 'PATCH', body: { theme } });
+            onUserChange(result.user);
+            setNotice('');
+          } catch (error) { setNotice(error.message); }
+        }}>{user.theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
+        <button className="mobile-menu" onClick={() => setMobileNav(!mobileNav)} aria-label={mobileNav ? 'Close navigation' : 'Open navigation'}>{mobileNav ? <X size={20} /> : <Menu size={20} />}</button>
+        <div className="top-profile" role="button" tabIndex={0} aria-label="Open account menu" onKeyDown={(event) => (event.key === 'Enter' || event.key === ' ') && setMenu(!menu)} onClick={() => setMenu(!menu)}><span className="profile-avatar">{initials(user.name)}</span><ChevronDown size={15} /></div>
+        {menu && <div className="user-menu"><b>{user.email}</b><button onClick={async () => { try { await onLogout(); } catch (error) { setNotice(error.message); } }}>Log out</button></div>}
+      </div>
+    </header>
+    {mobileNav && <><div className="nav-overlay" onClick={() => setMobileNav(false)}></div><nav className="mobile-drawer" aria-label="Mobile navigation"><div className="drawer-heading"><span>{user.name}’s workspace</span><button onClick={() => setMobileNav(false)} aria-label="Close navigation"><X size={18} /></button></div>{nav.map(([name, Icon]) => <button key={name} className={view === name ? 'active' : ''} onClick={() => { setView(name); setMobileNav(false); }}><Icon size={18} />{name}</button>)}</nav></>}
     <main className="main-content">
-      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileNav(true)} aria-label="Open navigation"><Menu /></button><div className="breadcrumb"><span>Workspace</span><b>/</b><strong>{view}</strong></div><div className="top-actions"><div className="top-profile" role="button" tabIndex={0} onKeyDown={(event) => (event.key === 'Enter' || event.key === ' ') && setMenu(!menu)} onClick={() => setMenu(!menu)}><span className="profile-avatar">{initials(user.name)}</span><ChevronDown size={15} /></div>{menu && <div className="user-menu"><b>{user.email}</b><button onClick={async () => { try { await onLogout(); } catch (error) { setNotice(error.message); } }}>Log out</button></div>}</div></header>
       <div className="page-content">
         {notice && <div className="notice" role="alert"><span>{notice}</span><button onClick={() => setNotice('')} aria-label="Dismiss message"><X size={15} /></button></div>}
-        {view === 'Overview' && <Overview expenses={overviewExpenses} summary={{ ...summary, userName: user.name }} summaryMonths={summaryMonths} onPeriodChange={async (months) => { setSummaryMonths(months); try { await refreshSummary(months); } catch (error) { setNotice(error.message); } }} query={query} setQuery={setQuery} setModal={setModal} remove={removeExpense} onViewAll={() => setView('Expenses')} />}
+        {view === 'Overview' && <Overview expenses={overviewExpenses} allExpenses={expenses} summary={{ ...summary, userName: user.name }} summaryMonths={summaryMonths} onPeriodChange={async (months) => { setSummaryMonths(months); try { await refreshSummary(months); } catch (error) { setNotice(error.message); } }} query={query} setQuery={setQuery} setModal={setModal} remove={removeExpense} onViewAll={() => setView('Expenses')} budgets={budgets} onBudgetSave={saveBudget} onBudgetRemove={removeBudget} onSetIncome={() => setView('Settings')} goals={goals} monthlyIncome={user.monthlyIncome || 0} />}
         {view === 'Expenses' && <ExpensesView expenses={expenses} query={query} setQuery={setQuery} category={category} setCategory={setCategory} period={period} setPeriod={setPeriod} setModal={setModal} remove={removeExpense} />}
-        {view === 'Reports' && <Reports summary={summary} onExport={exportReport} />}
+        {view === 'Reports' && <Reports summary={summary} onExport={exportReport} goals={goals} budgets={budgets} onBudgetSave={saveBudget} onBudgetRemove={removeBudget} />}
         {view === 'Goals' && <GoalsView goals={goals} setModal={setModal} onDelete={deleteGoal} onContribute={contribute} />}
-        {view === 'Settings' && <SettingsView user={user} onSave={async (name) => { const result = await api('/profile', { method: 'PATCH', body: { name } }); onUserChange(result.user); }} />}
+        {view === 'Settings' && <SettingsView user={user} onSave={async (name, monthlyIncome) => { const result = await api('/profile', { method: 'PATCH', body: { name, monthlyIncome } }); onUserChange(result.user); }} />}
       </div>
     </main>
     {modal && view === 'Goals' && <GoalModal item={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSave={saveGoal} />}
     {modal && view !== 'Goals' && <ExpenseModal item={modal === 'new' ? null : modal} onClose={() => setModal(null)} onSave={saveExpense} />}
+    {dailySummaryVisible && <DailySummaryModal allowance={(user.monthlyIncome || 0) / 30} spent={expenses.filter((expense) => expense.date === localDateValue()).reduce((sum, expense) => sum + expense.amount, 0)} onClose={() => {
+      const today = localDateValue();
+      localStorage.setItem(`bg_daily_summary_${user.id}`, today);
+      setDailySummaryVisible(false);
+      setDailySummaryDismissed(today);
+    }} />}
   </div>;
 }
 

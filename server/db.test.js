@@ -1,6 +1,45 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
-import { createPostgresAdapter, toPostgresSql } from './db.js';
+import Database from 'better-sqlite3';
+import { createDatabase, createPostgresAdapter, toPostgresSql } from './db.js';
+
+describe('SQLite schema migrations', () => {
+  it('adds account preference columns to an existing database without changing users', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bachat-guru-db-'));
+    const filename = path.join(directory, 'legacy.sqlite');
+    const legacy = new Database(filename);
+    legacy.exec(`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        name TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO users (email, password_hash, name)
+      VALUES ('existing@example.com', 'hash', 'Existing User');
+    `);
+    legacy.close();
+
+    const db = createDatabase(filename);
+    try {
+      const user = db.get('SELECT email, name, monthly_income, theme FROM users WHERE id = 1');
+      assert.deepEqual(user, {
+        email: 'existing@example.com',
+        name: 'Existing User',
+        monthly_income: 0,
+        theme: 'dark',
+      });
+      assert.equal(db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'category_budgets'").name, 'category_budgets');
+    } finally {
+      db.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('PostgreSQL database adapter', () => {
   it('converts parameter placeholders and monthly date aggregation to PostgreSQL syntax', () => {

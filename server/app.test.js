@@ -122,6 +122,53 @@ describe('Bachat Guru API', () => {
     assert.equal((await owner.delete(`/api/goals/${goal.id}`)).status, 204);
   });
 
+  it('persists account preferences and monthly category budgets without leaking them across users', async () => {
+    await register();
+    const currentMonth = new Date().toISOString().slice(0, 7);
+    const before = await owner.get('/api/auth/me');
+    assert.equal(before.body.user.monthlyIncome, 0);
+    assert.equal(before.body.user.theme, 'dark');
+
+    const profile = await owner.patch('/api/profile').send({
+      name: 'Akshat Kumar', monthlyIncome: 60000.25,
+    });
+    assert.equal(profile.status, 200);
+    assert.equal(profile.body.user.monthlyIncome, 60000.25);
+    assert.equal((await owner.patch('/api/preferences').send({ theme: 'light' })).body.user.theme, 'light');
+    assert.equal((await owner.get('/api/auth/me')).body.user.theme, 'light');
+    assert.equal((await owner.patch('/api/preferences').send({ theme: 'blue' })).status, 400);
+    assert.equal((await owner.patch('/api/profile').send({
+      name: 'Akshat Kumar', monthlyIncome: -1,
+    })).status, 400);
+
+    await createExpense(owner, { amount: 80, date: `${currentMonth}-05` });
+    const savedBudget = await owner.put('/api/budgets').send({
+      category: 'Food & dining', month: currentMonth, amount: 100,
+    });
+    assert.equal(savedBudget.status, 200);
+    assert.equal(savedBudget.body.budget.amount, 100);
+    const budgetList = await owner.get(`/api/budgets?month=${currentMonth}`);
+    const foodBudget = budgetList.body.budgets.find((budget) => budget.category === 'Food & dining');
+    assert.equal(foodBudget.amount, 100);
+    assert.equal(foodBudget.spent, 80);
+    assert.equal((await owner.put('/api/budgets').send({
+      category: 'Unknown', month: currentMonth, amount: 50,
+    })).status, 400);
+    assert.equal((await owner.get('/api/budgets?month=2026-13')).status, 400);
+
+    const other = request.agent(app);
+    await register(other, 'other@example.com');
+    const otherBudget = (await other.get(`/api/budgets?month=${currentMonth}`)).body.budgets
+      .find((budget) => budget.category === 'Food & dining');
+    assert.equal(otherBudget.amount, 0);
+    assert.equal(otherBudget.spent, 0);
+    assert.equal((await owner.delete('/api/budgets').send({
+      category: 'Food & dining', month: currentMonth,
+    })).status, 204);
+    assert.equal((await owner.get(`/api/budgets?month=${currentMonth}`)).body.budgets
+      .find((budget) => budget.category === 'Food & dining').amount, 0);
+  });
+
   it('updates profile, imports browser data only into an empty account, and revokes logout sessions', async () => {
     await register();
     const imported = await owner.post('/api/expenses/import').send({

@@ -51,6 +51,8 @@ export function createDatabase(filename = process.env.DB_FILE || './data/bachat-
       email TEXT NOT NULL UNIQUE COLLATE NOCASE,
       password_hash TEXT NOT NULL,
       name TEXT NOT NULL,
+      monthly_income REAL NOT NULL DEFAULT 0 CHECK(monthly_income >= 0),
+      theme TEXT NOT NULL DEFAULT 'dark' CHECK(theme IN ('dark', 'light')),
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS sessions (
@@ -82,7 +84,22 @@ export function createDatabase(filename = process.env.DB_FILE || './data/bachat-
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS goals_user_idx ON goals(user_id, id DESC);
+    CREATE TABLE IF NOT EXISTS category_budgets (
+      id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      category TEXT NOT NULL,
+      month_key TEXT NOT NULL,
+      amount REAL NOT NULL CHECK(amount > 0),
+      UNIQUE(user_id, category, month_key)
+    );
   `);
+  const userColumns = new Set(db.prepare('PRAGMA table_info(users)').all().map((column) => column.name));
+  if (!userColumns.has('monthly_income')) {
+    db.exec('ALTER TABLE users ADD COLUMN monthly_income REAL NOT NULL DEFAULT 0 CHECK(monthly_income >= 0)');
+  }
+  if (!userColumns.has('theme')) {
+    db.exec("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'dark' CHECK(theme IN ('dark', 'light'))");
+  }
   db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(new Date().toISOString());
   return db;
 }
@@ -158,8 +175,12 @@ export async function createPostgresDatabase(connectionString = process.env.DATA
         email TEXT NOT NULL UNIQUE,
         password_hash TEXT NOT NULL,
         name TEXT NOT NULL,
+        monthly_income NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK(monthly_income >= 0),
+        theme TEXT NOT NULL DEFAULT 'dark' CHECK(theme IN ('dark', 'light')),
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS monthly_income NUMERIC(12, 2) NOT NULL DEFAULT 0 CHECK(monthly_income >= 0);
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT 'dark' CHECK(theme IN ('dark', 'light'));
       CREATE TABLE IF NOT EXISTS sessions (
         id BIGSERIAL PRIMARY KEY,
         user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -189,6 +210,14 @@ export async function createPostgresDatabase(connectionString = process.env.DATA
         created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
       CREATE INDEX IF NOT EXISTS goals_user_idx ON goals(user_id, id DESC);
+      CREATE TABLE IF NOT EXISTS category_budgets (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        category TEXT NOT NULL,
+        month_key TEXT NOT NULL,
+        amount NUMERIC(12, 2) NOT NULL CHECK(amount > 0),
+        UNIQUE(user_id, category, month_key)
+      );
       DELETE FROM sessions WHERE expires_at <= CURRENT_TIMESTAMP
     `);
   } catch (error) {

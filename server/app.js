@@ -49,6 +49,11 @@ function validDate(value, optional = false) {
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }
 
+function validMonth(value) {
+  return typeof value === 'string'
+    && /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+}
+
 function validateExpense(input) {
   const title = typeof input.title === 'string' ? input.title.trim() : '';
   const amount = Number(input.amount);
@@ -87,7 +92,13 @@ function validateGoal(input) {
 }
 
 function publicUser(user) {
-  return { id: user.id, email: user.email, name: user.name };
+  return {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+    monthlyIncome: Number(user.monthlyIncome ?? user.monthly_income ?? 0),
+    theme: user.theme || 'dark',
+  };
 }
 
 export function createApp({ db = createDatabase(), secureCookies = process.env.NODE_ENV === 'production', serveFrontend = true } = {}) {
@@ -151,7 +162,8 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     if (!token) return sendError(response, 401, 'Please sign in to continue.');
     const session = await db.get(`
       SELECT sessions.id AS "sessionId", sessions.expires_at AS "expiresAt",
-             users.id, users.email, users.name
+             users.id, users.email, users.name,
+             users.monthly_income AS "monthlyIncome", users.theme
       FROM sessions JOIN users ON users.id = sessions.user_id
       WHERE sessions.token_hash = ?
     `, sha256(token));
@@ -160,7 +172,13 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
       response.setHeader('Set-Cookie', clearSessionCookie(secureCookies));
       return sendError(response, 401, 'Your session has expired. Please sign in again.');
     }
-    request.user = { id: session.id, email: session.email, name: session.name };
+    request.user = {
+      id: session.id,
+      email: session.email,
+      name: session.name,
+      monthlyIncome: Number(session.monthlyIncome ?? 0),
+      theme: session.theme || 'dark',
+    };
     request.sessionId = session.sessionId;
     next();
   }
@@ -179,7 +197,7 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     try {
       const id = await db.insert('INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)',
         email, bcrypt.hashSync(password, 12), name);
-      const user = { id: Number(id), email, name };
+      const user = { id: Number(id), email, name, monthlyIncome: 0, theme: 'dark' };
       await createSession(user.id, response);
       return response.status(201).json({ user });
     } catch (error) {
@@ -196,7 +214,11 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
     if (!email || typeof password !== 'string' || password.length > 72) {
       return sendError(response, 400, 'Enter your email address and password.');
     }
-    const user = await db.get('SELECT id, email, name, password_hash FROM users WHERE email = ?', email);
+    const user = await db.get(`
+      SELECT id, email, name, password_hash,
+             monthly_income AS "monthlyIncome", theme
+      FROM users WHERE email = ?
+    `, email);
     if (!user || !bcrypt.compareSync(password, user.password_hash)) {
       return sendError(response, 401, 'Email or password is incorrect.');
     }
@@ -217,8 +239,23 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
   app.patch('/api/profile', async (request, response) => {
     const name = typeof request.body.name === 'string' ? request.body.name.trim() : '';
     if (!name || name.length > 80) return sendError(response, 400, 'Name must be between 1 and 80 characters.');
-    await db.run('UPDATE users SET name = ? WHERE id = ?', name, request.user.id);
-    return response.json({ user: { ...request.user, name } });
+    let monthlyIncome = request.user.monthlyIncome;
+    if (request.body.monthlyIncome !== undefined) {
+      monthlyIncome = Number(request.body.monthlyIncome);
+      if (!Number.isFinite(monthlyIncome) || monthlyIncome < 0 || monthlyIncome > 1_000_000_000) {
+        return sendError(response, 400, 'Monthly income must be between 0 and 1,000,000,000.');
+      }
+      monthlyIncome = Math.round(monthlyIncome * 100) / 100;
+    }
+    await db.run('UPDATE users SET name = ?, monthly_income = ? WHERE id = ?', name, monthlyIncome, request.user.id);
+    return response.json({ user: { ...request.user, name, monthlyIncome } });
+  });
+
+  app.patch('/api/preferences', async (request, response) => {
+    const theme = request.body.theme;
+    if (!['dark', 'light'].includes(theme)) return sendError(response, 400, 'Choose a valid theme.');
+    await db.run('UPDATE users SET theme = ? WHERE id = ?', theme, request.user.id);
+    return response.json({ user: { ...request.user, theme } });
   });
 
   app.get('/api/expenses', async (request, response) => {
@@ -357,6 +394,60 @@ export function createApp({ db = createDatabase(), secureCookies = process.env.N
       FROM goals WHERE user_id = ? ORDER BY id DESC
     `, request.user.id);
     return response.json({ goals });
+  });
+
+  app.get('/api/budgets', async (request, response) => {
+    const month = request.query.month;
+    if (!validMonth(month)) return sendError(response, 400, 'Enter a valid budget month.');
+    const budgets = await db.all(`
+      SELECT category, amount
+      FROM category_budgets
+      WHERE user_id = ? AND month_key = ?
+    `, request.user.id, month);
+    const spending = await db.all(`
+      SELECT category, ROUND(SUM(amount), 2) AS spent
+      FROM expenses
+      WHERE user_id = ? AND strftime('%Y-%m', date) = ?
+      GROUP BY category
+    `, request.user.id, month);
+    const budgetByCategory = new Map(budgets.map((budget) => [budget.category, Number(budget.amount)]));
+    const spendingByCategory = new Map(spending.map((row) => [row.category, Number(row.spent)]));
+    return response.json({
+      month,
+      budgets: [...categories].map((category) => ({
+        category,
+        amount: budgetByCategory.get(category) || 0,
+        spent: spendingByCategory.get(category) || 0,
+      })),
+    });
+  });
+
+  app.put('/api/budgets', async (request, response) => {
+    const { category, month, amount: rawAmount } = request.body;
+    const amount = Number(rawAmount);
+    if (!categories.has(category)) return sendError(response, 400, 'Choose a valid expense category.');
+    if (!validMonth(month)) return sendError(response, 400, 'Enter a valid budget month.');
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) {
+      return sendError(response, 400, 'Budget must be greater than zero and at most 1,000,000,000.');
+    }
+    const roundedAmount = Math.round(amount * 100) / 100;
+    await db.run(`
+      INSERT INTO category_budgets (user_id, category, month_key, amount)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(user_id, category, month_key) DO UPDATE SET amount = excluded.amount
+    `, request.user.id, category, month, roundedAmount);
+    return response.json({ budget: { category, month, amount: roundedAmount } });
+  });
+
+  app.delete('/api/budgets', async (request, response) => {
+    const { category, month } = request.body;
+    if (!categories.has(category)) return sendError(response, 400, 'Choose a valid expense category.');
+    if (!validMonth(month)) return sendError(response, 400, 'Enter a valid budget month.');
+    await db.run(`
+      DELETE FROM category_budgets
+      WHERE user_id = ? AND category = ? AND month_key = ?
+    `, request.user.id, category, month);
+    return response.status(204).end();
   });
 
   app.post('/api/goals', async (request, response) => {

@@ -1,6 +1,6 @@
 # Bachat Guru
 
-Bachat Guru is a personal expense and savings-goal dashboard. The React interface keeps its existing layout and reads and writes authenticated, user-scoped data through an Express API. Local development uses SQLite; when `DATABASE_URL` is set, the API initializes and uses PostgreSQL, suitable for a managed database alongside a free web host. It does not connect to banks, provide OAuth/social sign-in, process payments, or offer financial advice.
+Bachat Guru is a personal finance dashboard for expense tracking, savings goals, spending insights, and monthly category budgets. Accounts include a persistent dark/light theme and a daily allowance based on monthly income divided by 30. The React interface reads and writes authenticated, user-scoped data through an Express API. Local development uses SQLite; when `DATABASE_URL` is set, the API initializes and uses PostgreSQL, suitable for a managed database alongside a free web host. It does not connect to banks, provide OAuth/social sign-in, process payments, or offer financial advice.
 
 ## Requirements
 
@@ -60,5 +60,6 @@ The Render service and local SQLite file are separate databases. Existing data o
 - Passwords are hashed with bcrypt (12 rounds); plaintext passwords are not stored.
 - Login and registration use rate-limited endpoints. Sessions are random, expire after seven days, are stored hashed in SQLite, and are sent in `HttpOnly`, `SameSite=Strict` cookies. Cookies are `Secure` in production mode.
 - Expense and goal endpoints scope reads, writes, reports, and CSV exports to the authenticated account. API inputs are validated server-side.
+- Theme and monthly income preferences, along with month-specific category budgets, are stored per account. Existing databases gain these fields with defaults while preserving existing users and transactions.
 - SQLite foreign keys, indexes, WAL mode, and a 5-second busy timeout are enabled. The database persists under `data/` by default and is excluded from version control. PostgreSQL uses the same account/data schema and is selected with `DATABASE_URL`.
 - Do not expose the local HTTP development server directly to the public internet. For remote production use, terminate HTTPS at a trusted reverse proxy and configure the hosting environment, persistent database storage, and secure backups appropriately.
