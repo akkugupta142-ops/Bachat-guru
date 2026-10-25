@@ -43,12 +43,19 @@ function Logo({ onClick }) {
     : <div className="logo">{content}</div>;
 }
 
-function Landing({ onAuth }) {
-  return <div className="landing">
+function ThemeToggle({ theme, onToggle }) {
+  const nextThemeName = theme === 'dark' ? 'fresh green' : 'premium dark';
+  return <button className="theme-toggle public-theme-toggle" type="button" aria-label={`Switch to ${nextThemeName} theme`} title={`Switch to ${nextThemeName} theme`} onClick={onToggle}>
+    {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+  </button>;
+}
+
+function Landing({ theme, onToggleTheme, onAuth }) {
+  return <div className="landing" data-theme={theme}>
     <nav className="landing-nav">
       <Logo />
       <div className="nav-links"><a href="#features">Features</a><a href="#features">How it works</a></div>
-      <button className="btn btn-ghost" onClick={() => onAuth('login')}><LogIn size={16} /> Log in</button>
+      <div className="landing-actions"><ThemeToggle theme={theme} onToggle={onToggleTheme} /><button className="btn btn-ghost" onClick={() => onAuth('login')}><LogIn size={16} /> Log in</button></div>
     </nav>
     <main className="hero">
       <div className="hero-copy">
@@ -81,7 +88,7 @@ function Landing({ onAuth }) {
   </div>;
 }
 
-function AuthPage({ initialMode, onBack, onSuccess }) {
+function AuthPage({ initialMode, theme, onToggleTheme, onBack, onSuccess }) {
   const [mode, setMode] = useState(initialMode);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -99,7 +106,7 @@ function AuthPage({ initialMode, onBack, onSuccess }) {
         method: 'POST',
         body: mode === 'register' ? { name, email, password } : { email, password },
       });
-      await onSuccess(result.user);
+      await onSuccess(result.user, mode === 'register' ? theme : null);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -107,10 +114,10 @@ function AuthPage({ initialMode, onBack, onSuccess }) {
     }
   }
 
-  return <div className="login-page">
+  return <div className="login-page" data-theme={theme}>
     <div className="login-side"><Logo /><div className="login-quote"><span>“</span><h2>Small steps today.<br />More freedom tomorrow.</h2><p>Bachat Guru helps you make confident decisions with your money, every day.</p></div><div className="login-side-footer">© 2026 Bachat Guru <span>•</span> Built for better habits</div></div>
     <div className="login-panel">
-      <button className="back-btn" onClick={onBack}>← Back to home</button>
+      <div className="auth-toolbar"><button className="back-btn" onClick={onBack}>← Back to home</button><ThemeToggle theme={theme} onToggle={onToggleTheme} /></div>
       <div className="login-form-wrap">
         <div className="mobile-logo"><Logo /></div>
         <span className="eyebrow">{mode === 'register' ? 'GET STARTED' : 'WELCOME BACK'}</span>
@@ -592,9 +599,26 @@ export default function App() {
   const [page, setPage] = useState('loading');
   const [authMode, setAuthMode] = useState('login');
   const [authNotice, setAuthNotice] = useState('');
+  const [publicTheme, setPublicTheme] = useState(
+    () => localStorage.getItem('bg_public_theme') === 'light' ? 'light' : 'dark',
+  );
+  const [publicThemeTouched, setPublicThemeTouched] = useState(false);
+
+  function togglePublicTheme() {
+    const theme = publicTheme === 'dark' ? 'light' : 'dark';
+    setPublicTheme(theme);
+    setPublicThemeTouched(true);
+    localStorage.setItem('bg_public_theme', theme);
+  }
 
   useEffect(() => {
-    api('/auth/me').then((result) => { setUser(result.user); setPage('dashboard'); })
+    api('/auth/me').then((result) => {
+      const theme = result.user.theme || 'dark';
+      setUser({ ...result.user, theme });
+      setPublicTheme(theme);
+      localStorage.setItem('bg_public_theme', theme);
+      setPage('dashboard');
+    })
       .catch((error) => { setPage('landing'); if (error.status !== 401) setAuthNotice(error.message); });
   }, []);
 
@@ -608,7 +632,7 @@ export default function App() {
     return () => window.removeEventListener('bg:session-expired', onSessionExpired);
   }, []);
 
-  async function acceptLogin(nextUser) {
+  async function acceptLogin(nextUser, requestedTheme = null) {
     let notice = '';
     const stored = localStorage.getItem('bg_expenses');
     if (stored) {
@@ -631,8 +655,20 @@ export default function App() {
           : `Some expenses saved in this browser were not imported: ${error.message}`;
       }
     }
+    if (requestedTheme && requestedTheme !== nextUser.theme) {
+      try {
+        const preference = await api('/preferences', { method: 'PATCH', body: { theme: requestedTheme } });
+        nextUser = preference.user;
+      } catch (error) {
+        notice = `You’re signed in, but the selected theme could not be saved: ${error.message}`;
+      }
+    }
     setAuthNotice('');
     setUser(nextUser);
+    const theme = nextUser.theme || 'dark';
+    setPublicTheme(theme);
+    localStorage.setItem('bg_public_theme', theme);
+    setPublicThemeTouched(false);
     setAuthNotice(notice);
     setPage('dashboard');
   }
@@ -645,7 +681,12 @@ export default function App() {
   }
 
   if (page === 'loading') return <div className="app-loading"><Logo /><p>Checking your secure session…</p></div>;
-  if (page === 'landing') return <>{authNotice && <div className="auth-notice" role="alert">{authNotice}</div>}<Landing onAuth={(mode) => { setAuthMode(mode); setPage('auth'); }} /></>;
-  if (page === 'auth') return <AuthPage initialMode={authMode} onBack={() => setPage('landing')} onSuccess={acceptLogin} />;
-  return <Dashboard key={user.id} user={user} onLogout={logout} onUserChange={setUser} initialNotice={authNotice} />;
+  if (page === 'landing') return <>{authNotice && <div className="auth-notice" role="alert">{authNotice}</div>}<Landing theme={publicTheme} onToggleTheme={togglePublicTheme} onAuth={(mode) => { setAuthMode(mode); setPage('auth'); }} /></>;
+  if (page === 'auth') return <AuthPage initialMode={authMode} theme={publicTheme} onToggleTheme={togglePublicTheme} onBack={() => setPage('landing')} onSuccess={(nextUser, signupTheme) => acceptLogin(nextUser, signupTheme || (publicThemeTouched ? publicTheme : null))} />;
+  return <Dashboard key={user.id} user={user} onLogout={logout} onUserChange={(nextUser) => {
+    setUser(nextUser);
+    const theme = nextUser.theme || 'dark';
+    setPublicTheme(theme);
+    localStorage.setItem('bg_public_theme', theme);
+  }} initialNotice={authNotice} />;
 }
